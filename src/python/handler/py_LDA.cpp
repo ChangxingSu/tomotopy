@@ -12,15 +12,29 @@ using namespace std;
 static int LDA_init(TopicModelObject *self, PyObject *args, PyObject *kwargs)
 {
 	size_t tw = 0, minCnt = 0, minDf = 0, rmTop = 0;
+	PyObject* sparsePyObj = nullptr;  // use PyObject* to receive parameter
 	tomoto::LDAArgs margs;
 	PyObject* objCorpus = nullptr, *objTransform = nullptr;
 	PyObject* objAlpha = nullptr, *objSeed = nullptr;
-	static const char* kwlist[] = { "tw", "min_cf", "min_df", "rm_top", "k", "alpha", "eta", "seed",
-		"corpus", "transform", nullptr };
-	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|nnnnnOfOOO", (char**)kwlist, 
-		&tw, &minCnt, &minDf, &rmTop, &margs.k, &objAlpha, &margs.eta, &objSeed, &objCorpus, &objTransform)) return -1;
+	static const char* kwlist[] = { "tw", "min_cf", "min_df", "rm_top", "k", 
+		"alpha", "eta", "seed", "sparse", "corpus", "transform", nullptr };
+	
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|nnnnnOfOOOO", (char**)kwlist,
+		&tw, &minCnt, &minDf, &rmTop, &margs.k, &objAlpha, &margs.eta, 
+		&objSeed, &sparsePyObj, &objCorpus, &objTransform)) return -1;
+
 	return py::handleExc([&]()
 	{
+		// check sparse parameter
+		bool sparse = false;
+		if (sparsePyObj != nullptr) {
+			if (PyBool_Check(sparsePyObj)) {
+				sparse = PyObject_IsTrue(sparsePyObj);
+			} else {
+				throw py::ValueError("'sparse' parameter must be a boolean value");
+			}
+		}
+
 		if (objAlpha) margs.alpha = broadcastObj<tomoto::Float>(objAlpha, margs.k,
 			[=]() { return "`alpha` must be an instance of `float` or `List[float]` with length `k` (given " + py::repr(objAlpha) + ")"; }
 		);
@@ -38,6 +52,7 @@ static int LDA_init(TopicModelObject *self, PyObject *args, PyObject *kwargs)
 			tw, minCnt, minDf, rmTop, margs.k, margs.alpha, margs.eta, margs.seed
 		);
 		py::setPyDictItem(self->initParams, "version", getVersion());
+		py::setPyDictItem(self->initParams, "sparse", sparse);
 
 		insertCorpus(self, objCorpus, objTransform);
 		return 0;
@@ -508,6 +523,21 @@ static PyObject* LDA_getUsedVocabWeightedCf(TopicModelObject* self, void* closur
 	});
 }
 
+static PyObject* LDA_getSparse(TopicModelObject* self, void* closure)
+{
+    return py::handleExc([&]()
+    {
+        if (!self->inst) throw py::RuntimeError{ "inst is null" };
+        PyObject* sparse = PyDict_GetItemString(self->initParams, "sparse");
+        if (!sparse) {
+            // if sparse is not set, return False
+            Py_RETURN_FALSE;
+        }
+        Py_INCREF(sparse);
+        return sparse;
+    });
+}
+
 static PyObject* LDA_getUsedVocabDf(TopicModelObject* self, void* closure)
 {
 	return py::handleExc([&]()
@@ -848,6 +878,7 @@ static PyGetSetDef LDA_getseters[] = {
 	{ (char*)"used_vocab_df", (getter)LDA_getUsedVocabDf, nullptr, LDA_used_vocab_df__doc__, nullptr },
 	{ (char*)"global_step", (getter)LDA_getGlobalStep, nullptr, LDA_global_step__doc__, nullptr },
 	{ (char*)"_init_params", (getter)LDA_getInitParams, nullptr, "", nullptr },
+	{ (char*)"sparse", (getter)LDA_getSparse, nullptr, LDA_sparse__doc__, nullptr },
 	{ nullptr },
 };
 
