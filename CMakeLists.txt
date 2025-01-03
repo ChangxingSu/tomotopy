@@ -104,6 +104,7 @@ else()
 endif()
 
 include_directories(${INCLUDE_DIRS}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 link_directories(${LIBRARY_DIRS})
 
