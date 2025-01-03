@@ -22,3 +22,6 @@ vsproj/x64
 vsproj/Debug
 vsproj/Release*
 .vs/
+
+algorithm.md
+prd.md
