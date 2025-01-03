@@ -251,7 +251,7 @@ u8R""(문헌이 할당된 가상 문헌의 id (`tomotopy.PTModel` 모형에서�
     class LDA
 */
 DOC_SIGNATURE_EN_KO(LDA___init____doc__,
-    "LDAModel(tw=TermWeight.ONE, min_cf=0, min_df=0, rm_top=0, k=1, alpha=0.1, eta=0.01, seed=None, corpus=None, transform=None)",
+    "LDAModel(tw=TermWeight.ONE, min_cf=0, min_df=0, rm_top=0, k=1, alpha=0.1, eta=0.01, seed=None, corpus=None, transform=None, sparse=False)",
     u8R""(This type provides Latent Dirichlet Allocation(LDA) topic model and its implementation is based on following papers:
 	
 > * Blei, D.M., Ng, A.Y., &Jordan, M.I. (2003).Latent dirichlet allocation.Journal of machine Learning research, 3(Jan), 993 - 1022.
@@ -590,6 +590,10 @@ DOC_SIGNATURE_EN_KO(LDA_get_count_by_topics__doc__,
     u8R""(Return the number of words allocated to each topic.)"",
     u8R""(각각의 토픽에 할당된 단어의 개수를 `list`형태로 반환합니다.)"");
 
+DOC_VARIABLE_EN_KO(LDA_sparse__doc__,
+    u8R""(whether to use sparse matrix storage for topic-word distribution (read-only))"",
+    u8R""(토픽-단어 분포에 대해 희소 행렬 저장 방식을 사용할지 여부 (읽기전용))"");
+    
 DOC_SIGNATURE_EN_KO(LDA_infer__doc__,
     "infer(self, doc, iter=100, tolerance=-1, workers=0, parallel=0, together=False, transform=None)",
     u8R""(Return the inferred topic distribution from unseen `doc`s.
@@ -3645,3 +3649,5 @@ DOC_VARIABLE_EN_KO(PT_p__doc__,
 u8R""(가상 문헌의 개수 (읽기전용)
 
 .. versionadded:: 0.11.0)"");
+
+
