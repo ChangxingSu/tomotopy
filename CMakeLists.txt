@@ -81,15 +81,47 @@ else()
     set ( CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO "${CMAKE_EXE_LINKER_FLAGS_RELEASE} ${ADDITIONAL_LINKER_FLAGS}" )
 endif()
 
-SET (srcs 
-)
+SET (srcs)
 
 if (EXT_TYPE STREQUAL "handler")
-    file(GLOB cpp_files "src/python/handler/*.cpp" "src/Utils/*.cpp" "src/TopicModel/*.cpp" "src/Labeling/*.cpp")
+    file(GLOB cpp_files  "src/Utils/*.cpp" "src/Labeling/*.cpp")
     SET(srcs
         ${srcs}
-        ${cpp_files}
+        src/python/handler/py_main.cpp
+        src/python/handler/py_LDA.cpp
+        src/python/handler/py_utils.cpp
+        
+        src/TopicModel/LDA.h
+        src/TopicModel/LDAModel.hpp
+        src/TopicModel/LDAModel.cpp
+        src/TopicModel/LDACVB0Model.hpp
+        src/TopicModel/TopicModel.hpp
     )
+
+    list(REMOVE_ITEM srcs
+        src/TopicModel/CTModel.cpp
+        src/TopicModel/DMRModel.cpp
+        src/TopicModel/DTModel.cpp
+        src/TopicModel/GDMRModel.cpp
+        src/TopicModel/HDPModel.cpp
+        src/TopicModel/HLDAModel.cpp
+        src/TopicModel/HPAModel.cpp
+        src/TopicModel/LLDAModel.cpp
+        src/TopicModel/MGLDAModel.cpp
+        src/TopicModel/PAModel.cpp
+        src/TopicModel/PLDAModel.cpp
+        src/TopicModel/PTModel.cpp
+        src/TopicModel/SLDAModel.cpp
+    )
+
+    include_directories(
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/TopicModel
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Utils
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/python/handler
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/Utils/LBFGS
+    )
+
     add_definitions(-DMODULE_NAME=${MODULE_NAME})
     add_definitions(-DTOMOTOPY_ISA=${TOMOTOPY_ISA})
     if (TOMOTOPY_LANG STREQUAL "kr")
