@@ -218,6 +218,9 @@ namespace tomoto
 
 		ExtraDocData eddTrain;
 
+		// 添加稀疏prior存储
+		std::unordered_map<std::string, std::vector<Tid>> sparseEtaByWord;
+
 		template<typename _List>
 		static Float calcDigammaSum(ThreadPool* pool, _List list, size_t len, Float alpha)
 		{
@@ -721,19 +724,320 @@ namespace tomoto
 			if(_tw != TermWeight::one) doc.wordWeights.resize(wordSize);
 		}
 
-		void prepareWordPriors()
+		void setSparseWordPrior(const std::string& word, const std::vector<Tid>& topicIds) override 
 		{
-			if (etaByWord.empty()) return;
-			etaByTopicWord.resize(K, this->realV);
-			etaSumByTopic.resize(K);
-			etaByTopicWord.array() = eta;
-			for (auto& it : etaByWord)
-			{
-				auto id = this->dict.toWid(it.first);
-				if (id == (Vid)-1 || id >= this->realV) continue;
-				etaByTopicWord.col(id) = Eigen::Map<Vector>{ it.second.data(), (Eigen::Index)it.second.size() };
+			// 验证topic ids是否有效
+			for(auto tid : topicIds) {
+				if(tid >= K) {
+					std::cout << "Invalid topic ID: " << tid << ", K = " << K << std::endl;
+					THROW_ERROR_WITH_INFO(exc::InvalidArgument, "topic id must be less than K");
+				}
 			}
-			etaSumByTopic = etaByTopicWord.rowwise().sum();
+			
+			this->dict.add(word);
+			if(this->dict.size() > this->vocabCf.size()) {
+				this->vocabCf.resize(this->dict.size());
+				this->vocabDf.resize(this->dict.size());
+			}
+			
+			sparseEtaByWord[word] = topicIds;
+		}
+		
+		std::vector<Tid> getSparseWordPrior(const std::string& word) const override 
+		{
+			auto it = sparseEtaByWord.find(word);
+			if(it == sparseEtaByWord.end()) return {};
+			return it->second;
+		}
+
+		template<typename _Ar> void _save(_Ar& ar, int full) const
+		{
+			BaseClass::_save(ar);
+			ar(K, alpha, alphas, eta, optimInterval, burnIn,
+			   vocabWeights, etaByTopicWord, etaSumByTopic,
+			   this->globalState);
+
+			// 只在full=2时，最终模型保存prior信息
+			if (full > 1) {
+				ar(etaByWord, sparseEtaByWord);
+			}
+		}
+
+		template<typename _Ar> void _load(_Ar& ar)
+		{
+			BaseClass::_load(ar);
+			ar(K, alpha, alphas, eta, optimInterval, burnIn,
+			   vocabWeights, etaByTopicWord, etaSumByTopic,
+			   this->globalState);
+
+			try {
+				// 尝试读取prior信息
+				ar(etaByWord, sparseEtaByWord);
+			}
+			catch(const std::exception&) {
+				// 如果文件中没有prior信息,清空相关数据
+				etaByWord.clear();
+				sparseEtaByWord.clear();
+			}
+		}
+
+	public:
+		DEFINE_SERIALIZER_WITH_VERSION(0, vocabWeights, alpha, alphas, eta, K);
+
+		DEFINE_TAGGED_SERIALIZER_WITH_VERSION(1, 0x00010001, vocabWeights, alpha, alphas, eta, K, etaByWord,
+			burnIn, optimInterval);
+
+		DEFINE_HASHER(vocabWeights, alpha, alphas, eta, K, /*etaByWord,*/ burnIn, optimInterval);
+
+		LDAModel(const LDAArgs& args, bool checkAlpha = true)
+			: BaseClass(args.seed), K(args.k), alpha(args.alpha[0]), eta(args.eta)
+		{
+			if (K == 0 || K >= 0x80000000) THROW_ERROR_WITH_INFO(exc::InvalidArgument, text::format("wrong K value (K = %zd)", K));
+
+			if (args.alpha.size() == 1)
+			{
+				alphas = Vector::Constant(K, alpha);
+			}
+			else if (args.alpha.size() == args.k)
+			{
+				alphas = Eigen::Map<const Vector>(args.alpha.data(), args.alpha.size());
+			}
+			else if (checkAlpha)
+			{
+				THROW_ERROR_WITH_INFO(exc::InvalidArgument, text::format("wrong alpha value (len = %zd)", args.alpha.size()));
+			}
+
+			if ((alphas.array() <= 0).any()) THROW_ERROR_WITH_INFO(exc::InvalidArgument, "wrong alpha value");
+			if (eta <= 0) THROW_ERROR_WITH_INFO(exc::InvalidArgument, text::format("wrong eta value (eta = %f)", eta));
+		}
+
+		GETTER(K, size_t, K);
+		GETTER(Alpha, Float, alpha);
+		GETTER(Eta, Float, eta);
+		GETTER(OptimInterval, size_t, optimInterval);
+		GETTER(BurnInIteration, size_t, burnIn);
+
+		Float getAlpha(size_t k1) const override { return alphas[k1]; }
+
+		TermWeight getTermWeight() const override
+		{
+			return _tw;
+		}
+
+		void setOptimInterval(size_t _optimInterval) override
+		{
+			if (_optimInterval > 0x7FFFFFFF) THROW_ERROR_WITH_INFO(exc::InvalidArgument, "wrong value");
+			optimInterval = (uint32_t)_optimInterval;
+		}
+
+		void setBurnInIteration(size_t iteration) override
+		{
+			if (iteration > 0x7FFFFFFF) THROW_ERROR_WITH_INFO(exc::InvalidArgument, "wrong value");
+			burnIn = (uint32_t)iteration;
+		}
+
+		size_t addDoc(const RawDoc& rawDoc, const RawDocTokenizer::Factory& tokenizer) override
+		{
+			return this->_addDoc(this->template _makeFromRawDoc<false>(rawDoc, tokenizer));
+		}
+
+		std::unique_ptr<DocumentBase> makeDoc(const RawDoc& rawDoc, const RawDocTokenizer::Factory& tokenizer) const override
+		{
+			return std::make_unique<_DocType>(as_mutable(this)->template _makeFromRawDoc<true>(rawDoc, tokenizer));
+		}
+
+		size_t addDoc(const RawDoc& rawDoc) override
+		{
+			return this->_addDoc(this->_makeFromRawDoc(rawDoc));
+		}
+
+		std::unique_ptr<DocumentBase> makeDoc(const RawDoc& rawDoc) const override
+		{
+			return std::make_unique<_DocType>(as_mutable(this)->template _makeFromRawDoc<true>(rawDoc));
+		}
+
+		void setWordPrior(const std::string& word, const std::vector<Float>& priors) override
+		{
+			if (priors.size() != K) THROW_ERROR_WITH_INFO(exc::InvalidArgument, "priors.size() must be equal to K.");
+			for (auto p : priors)
+			{
+				if (p < 0) THROW_ERROR_WITH_INFO(exc::InvalidArgument, "priors must not be less than 0.");
+			}
+			this->dict.add(word);
+			if (this->dict.size() > this->vocabCf.size())
+			{
+				this->vocabCf.resize(this->dict.size());
+				this->vocabDf.resize(this->dict.size());
+			}
+			etaByWord.emplace(word, priors);
+		}
+
+		std::vector<Float> getWordPrior(const std::string& word) const override
+		{
+			if (etaByTopicWord.size())
+			{
+				auto id = this->dict.toWid(word);
+				if (id == (Vid)-1) return {};
+				auto col = etaByTopicWord.col(id);
+				return std::vector<Float>{ col.data(), col.data() + col.size() };
+			}
+			else
+			{
+				auto it = etaByWord.find(word);
+				if (it == etaByWord.end()) return {};
+				return it->second;
+			}
+		}
+
+		void updateDocs()
+		{
+			size_t docId = 0;
+			for (auto& doc : this->docs)
+			{
+				doc.template update<>(getTopicDocPtr(docId++), *static_cast<DerivedClass*>(this));
+			}
+		}
+
+		void prepare(bool initDocs = true, size_t minWordCnt = 0, size_t minWordDf = 0, size_t removeTopN = 0, bool updateStopwords = true) override
+		{
+			if (initDocs && updateStopwords) this->removeStopwords(minWordCnt, minWordDf, removeTopN);
+			static_cast<DerivedClass*>(this)->updateWordFormCnts();
+			static_cast<DerivedClass*>(this)->updateWeakArray();
+			static_cast<DerivedClass*>(this)->initGlobalState(initDocs);
+			static_cast<DerivedClass*>(this)->prepareWordPriors();
+
+			const size_t V = this->realV;
+			if (V == 0) 
+			{
+				std::cerr << "[warn] No valid vocabs in the model!" << std::endl;
+			}
+
+			if (initDocs)
+			{
+				std::vector<uint32_t> df, cf, tf;
+				size_t totCf;
+
+				// calculate weighting
+				if (_tw != TermWeight::one)
+				{
+					df.resize(V);
+					tf.resize(V);
+					for (auto& doc : this->docs)
+					{
+						for (auto w : std::unordered_set<Vid>{ doc.words.begin(), doc.words.end() })
+						{
+							if (w >= this->realV) continue;
+							++df[w];
+						}
+					}
+					totCf = std::accumulate(this->vocabCf.begin(), this->vocabCf.end(), 0);
+				}
+				if (_tw == TermWeight::idf)
+				{
+					vocabWeights.resize(V);
+					for (size_t i = 0; i < V; ++i)
+					{
+						vocabWeights[i] = (Float)log(this->docs.size() / (double)df[i]);
+					}
+				}
+				else if (_tw == TermWeight::pmi)
+				{
+					vocabWeights.resize(V);
+					for (size_t i = 0; i < V; ++i)
+					{
+						vocabWeights[i] = (Float)(this->vocabCf[i] / (double)totCf);
+					}
+				}
+
+				decltype(static_cast<DerivedClass*>(this)->makeGeneratorForInit(nullptr)) generator;
+				if(!(m_flags & flags::generator_by_doc)) generator = static_cast<DerivedClass*>(this)->makeGeneratorForInit(nullptr);
+				for (auto& doc : this->docs)
+				{
+					initializeDocState<false>(doc, &doc - &this->docs[0], generator, this->globalState, this->rg);
+				}
+			}
+			else
+			{
+				static_cast<DerivedClass*>(this)->updateDocs();
+				for (auto& doc : this->docs) doc.updateSumWordWeight(this->realV);
+			}
+			static_cast<DerivedClass*>(this)->prepareShared();
+			BaseClass::prepare(initDocs, minWordCnt, minWordDf, removeTopN, updateStopwords);
+		}
+
+		std::vector<uint64_t> getCountByTopic() const override
+		{
+			return static_cast<const DerivedClass*>(this)->_getTopicsCount();
+		}
+
+		std::vector<Float> _getTopicsByDoc(const _DocType& doc, bool normalize) const
+		{
+			if (!doc.numByTopic.size()) return {};
+			std::vector<Float> ret(K);
+			Eigen::Map<Eigen::Array<Float, -1, 1>> m{ ret.data(), K };
+			if (normalize)
+			{
+				m = (doc.numByTopic.array().template cast<Float>() + alphas.array()) / (doc.getSumWordWeight() + alphas.sum());
+			}
+			else
+			{
+				m = doc.numByTopic.array().template cast<Float>() + alphas.array();
+			}
+			return ret;
+		}
+
+		void saveModel(std::ostream& str, int full = 1, const std::vector<uint8_t>* extra = nullptr) const
+		{
+			serializer::Serializer<std::ostream, void> ar{ str };
+			_save(ar, full);
+			if (extra) {
+				// 写入extra数据的大小
+				serializer::writeToStream(str, (uint32_t)extra->size());
+				// 直接写入二进制数据
+				if (!str.write((const char*)extra->data(), extra->size())) {
+					throw std::runtime_error("Failed to write extra data");
+				}
+			}
+		}
+
+		void prepareWordPriors() 
+		{
+			std::cout << "Preparing word priors..." << std::endl;
+			std::cout << "Number of sparse priors: " << sparseEtaByWord.size() << std::endl;
+			
+			if(!sparseEtaByWord.empty()) 
+			{
+				if(etaByTopicWord.size() == 0) 
+				{
+					std::cout << "Initializing etaByTopicWord with size K=" << K << ", V=" << this->realV << std::endl;
+					 etaByTopicWord.resize(K, this->realV);
+					 etaSumByTopic.resize(K);
+					 etaByTopicWord.array() = 1e-10;
+				}
+				
+				size_t processed = 0;
+				for(const auto& it : sparseEtaByWord) 
+				{
+					auto id = this->dict.toWid(it.first);
+					if(id == (Vid)-1 || id >= this->realV) continue;
+					
+					etaByTopicWord.col(id).array() = 1e-10;
+					
+					for(Tid tid : it.second) 
+					{
+						etaByTopicWord(tid, id) = 1.0;
+					}
+					
+					processed++;
+					if(processed % 1000 == 0) 
+					{
+						std::cout << "Processed " << processed << " priors..." << std::endl;
+					}
+				}
+				
+				etaSumByTopic = etaByTopicWord.rowwise().sum();
+				std::cout << "Prior processing completed: " << processed << " words processed" << std::endl;
+			}
 		}
 
 		void initGlobalState(bool initDocs)
@@ -951,211 +1255,6 @@ namespace tomoto
 				for (auto& r : res) ret.emplace_back(r.get());
 				return ret;
 			}
-		}
-
-	public:
-		DEFINE_SERIALIZER_WITH_VERSION(0, vocabWeights, alpha, alphas, eta, K);
-
-		DEFINE_TAGGED_SERIALIZER_WITH_VERSION(1, 0x00010001, vocabWeights, alpha, alphas, eta, K, etaByWord,
-			burnIn, optimInterval);
-
-		DEFINE_HASHER(vocabWeights, alpha, alphas, eta, K, /*etaByWord,*/ burnIn, optimInterval);
-
-		LDAModel(const LDAArgs& args, bool checkAlpha = true)
-			: BaseClass(args.seed), K(args.k), alpha(args.alpha[0]), eta(args.eta)
-		{
-			if (K == 0 || K >= 0x80000000) THROW_ERROR_WITH_INFO(exc::InvalidArgument, text::format("wrong K value (K = %zd)", K));
-
-			if (args.alpha.size() == 1)
-			{
-				alphas = Vector::Constant(K, alpha);
-			}
-			else if (args.alpha.size() == args.k)
-			{
-				alphas = Eigen::Map<const Vector>(args.alpha.data(), args.alpha.size());
-			}
-			else if (checkAlpha)
-			{
-				THROW_ERROR_WITH_INFO(exc::InvalidArgument, text::format("wrong alpha value (len = %zd)", args.alpha.size()));
-			}
-
-			if ((alphas.array() <= 0).any()) THROW_ERROR_WITH_INFO(exc::InvalidArgument, "wrong alpha value");
-			if (eta <= 0) THROW_ERROR_WITH_INFO(exc::InvalidArgument, text::format("wrong eta value (eta = %f)", eta));
-		}
-
-		GETTER(K, size_t, K);
-		GETTER(Alpha, Float, alpha);
-		GETTER(Eta, Float, eta);
-		GETTER(OptimInterval, size_t, optimInterval);
-		GETTER(BurnInIteration, size_t, burnIn);
-
-		Float getAlpha(size_t k1) const override { return alphas[k1]; }
-
-		TermWeight getTermWeight() const override
-		{
-			return _tw;
-		}
-
-		void setOptimInterval(size_t _optimInterval) override
-		{
-			if (_optimInterval > 0x7FFFFFFF) THROW_ERROR_WITH_INFO(exc::InvalidArgument, "wrong value");
-			optimInterval = (uint32_t)_optimInterval;
-		}
-
-		void setBurnInIteration(size_t iteration) override
-		{
-			if (iteration > 0x7FFFFFFF) THROW_ERROR_WITH_INFO(exc::InvalidArgument, "wrong value");
-			burnIn = (uint32_t)iteration;
-		}
-
-		size_t addDoc(const RawDoc& rawDoc, const RawDocTokenizer::Factory& tokenizer) override
-		{
-			return this->_addDoc(this->template _makeFromRawDoc<false>(rawDoc, tokenizer));
-		}
-
-		std::unique_ptr<DocumentBase> makeDoc(const RawDoc& rawDoc, const RawDocTokenizer::Factory& tokenizer) const override
-		{
-			return std::make_unique<_DocType>(as_mutable(this)->template _makeFromRawDoc<true>(rawDoc, tokenizer));
-		}
-
-		size_t addDoc(const RawDoc& rawDoc) override
-		{
-			return this->_addDoc(this->_makeFromRawDoc(rawDoc));
-		}
-
-		std::unique_ptr<DocumentBase> makeDoc(const RawDoc& rawDoc) const override
-		{
-			return std::make_unique<_DocType>(as_mutable(this)->template _makeFromRawDoc<true>(rawDoc));
-		}
-
-		void setWordPrior(const std::string& word, const std::vector<Float>& priors) override
-		{
-			if (priors.size() != K) THROW_ERROR_WITH_INFO(exc::InvalidArgument, "priors.size() must be equal to K.");
-			for (auto p : priors)
-			{
-				if (p < 0) THROW_ERROR_WITH_INFO(exc::InvalidArgument, "priors must not be less than 0.");
-			}
-			this->dict.add(word);
-			if (this->dict.size() > this->vocabCf.size())
-			{
-				this->vocabCf.resize(this->dict.size());
-				this->vocabDf.resize(this->dict.size());
-			}
-			etaByWord.emplace(word, priors);
-		}
-
-		std::vector<Float> getWordPrior(const std::string& word) const override
-		{
-			if (etaByTopicWord.size())
-			{
-				auto id = this->dict.toWid(word);
-				if (id == (Vid)-1) return {};
-				auto col = etaByTopicWord.col(id);
-				return std::vector<Float>{ col.data(), col.data() + col.size() };
-			}
-			else
-			{
-				auto it = etaByWord.find(word);
-				if (it == etaByWord.end()) return {};
-				return it->second;
-			}
-		}
-
-		void updateDocs()
-		{
-			size_t docId = 0;
-			for (auto& doc : this->docs)
-			{
-				doc.template update<>(getTopicDocPtr(docId++), *static_cast<DerivedClass*>(this));
-			}
-		}
-
-		void prepare(bool initDocs = true, size_t minWordCnt = 0, size_t minWordDf = 0, size_t removeTopN = 0, bool updateStopwords = true) override
-		{
-			if (initDocs && updateStopwords) this->removeStopwords(minWordCnt, minWordDf, removeTopN);
-			static_cast<DerivedClass*>(this)->updateWordFormCnts();
-			static_cast<DerivedClass*>(this)->updateWeakArray();
-			static_cast<DerivedClass*>(this)->initGlobalState(initDocs);
-			static_cast<DerivedClass*>(this)->prepareWordPriors();
-
-			const size_t V = this->realV;
-			if (V == 0) 
-			{
-				std::cerr << "[warn] No valid vocabs in the model!" << std::endl;
-			}
-
-			if (initDocs)
-			{
-				std::vector<uint32_t> df, cf, tf;
-				size_t totCf;
-
-				// calculate weighting
-				if (_tw != TermWeight::one)
-				{
-					df.resize(V);
-					tf.resize(V);
-					for (auto& doc : this->docs)
-					{
-						for (auto w : std::unordered_set<Vid>{ doc.words.begin(), doc.words.end() })
-						{
-							if (w >= this->realV) continue;
-							++df[w];
-						}
-					}
-					totCf = std::accumulate(this->vocabCf.begin(), this->vocabCf.end(), 0);
-				}
-				if (_tw == TermWeight::idf)
-				{
-					vocabWeights.resize(V);
-					for (size_t i = 0; i < V; ++i)
-					{
-						vocabWeights[i] = (Float)log(this->docs.size() / (double)df[i]);
-					}
-				}
-				else if (_tw == TermWeight::pmi)
-				{
-					vocabWeights.resize(V);
-					for (size_t i = 0; i < V; ++i)
-					{
-						vocabWeights[i] = (Float)(this->vocabCf[i] / (double)totCf);
-					}
-				}
-
-				decltype(static_cast<DerivedClass*>(this)->makeGeneratorForInit(nullptr)) generator;
-				if(!(m_flags & flags::generator_by_doc)) generator = static_cast<DerivedClass*>(this)->makeGeneratorForInit(nullptr);
-				for (auto& doc : this->docs)
-				{
-					initializeDocState<false>(doc, &doc - &this->docs[0], generator, this->globalState, this->rg);
-				}
-			}
-			else
-			{
-				static_cast<DerivedClass*>(this)->updateDocs();
-				for (auto& doc : this->docs) doc.updateSumWordWeight(this->realV);
-			}
-			static_cast<DerivedClass*>(this)->prepareShared();
-			BaseClass::prepare(initDocs, minWordCnt, minWordDf, removeTopN, updateStopwords);
-		}
-
-		std::vector<uint64_t> getCountByTopic() const override
-		{
-			return static_cast<const DerivedClass*>(this)->_getTopicsCount();
-		}
-
-		std::vector<Float> _getTopicsByDoc(const _DocType& doc, bool normalize) const
-		{
-			if (!doc.numByTopic.size()) return {};
-			std::vector<Float> ret(K);
-			Eigen::Map<Eigen::Array<Float, -1, 1>> m{ ret.data(), K };
-			if (normalize)
-			{
-				m = (doc.numByTopic.array().template cast<Float>() + alphas.array()) / (doc.getSumWordWeight() + alphas.sum());
-			}
-			else
-			{
-				m = doc.numByTopic.array().template cast<Float>() + alphas.array();
-			}
-			return ret;
 		}
 
 	};

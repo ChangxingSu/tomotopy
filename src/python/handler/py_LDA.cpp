@@ -368,7 +368,7 @@ static PyObject* LDA_save(TopicModelObject* self, PyObject* args, PyObject *kwar
 	const char* filename;
 	size_t full = 1;
 	static const char* kwlist[] = { "filename", "full", nullptr };
-	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "s|p", (char**)kwlist, &filename, &full)) return nullptr;
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "s|n", (char**)kwlist, &filename, &full)) return nullptr;
 	return py::handleExc([&]()
 	{
 		if (!self->inst) throw py::RuntimeError{ "inst is null" };
@@ -396,7 +396,7 @@ static PyObject* LDA_save(TopicModelObject* self, PyObject* args, PyObject *kwar
 			memcpy(extra_data.data(), buf, bufsize);
 		}
 
-		self->inst->saveModel(str, !!full, &extra_data);
+		self->inst->saveModel(str, full, &extra_data);
 		Py_INCREF(Py_None);
 		return Py_None;
 	});
@@ -661,116 +661,41 @@ DEFINE_SETTER_NON_NEGATIVE_INT(tomoto::ILDAModel, LDA, setBurnInIteration);
 
 DEFINE_LOADER(LDA, LDA_type);
 
-/*
-PyObject * LDA_load(PyObject*, PyObject * args, PyObject * kwargs)
+PyObject* LDA_setSparseWordPrior(TopicModelObject* self, PyObject* args, PyObject *kwargs)
 {
-	const char* filename;
-	static const char* kwlist[] = { "filename", nullptr };
-	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "s", (char**)kwlist, &filename)) return nullptr;
-	try
+	const char* word;
+	PyObject* topicIds;
+	static const char* kwlist[] = { "word", "topic_ids", nullptr };
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "sO", (char**)kwlist, &word, &topicIds)) return nullptr;
+	return py::handleExc([&]()
 	{
-		ifstream str{ filename, ios_base::binary };
-		if (!str) throw ios_base::failure{ std::string("cannot open file '") + filename + std::string("'") };
-		for (size_t i = 0; i < (size_t)tomoto::TermWeight::size; ++i)
-		{
-			str.seekg(0);
-			py::UniqueObj args{ Py_BuildValue("(n)", i) };
-			auto* p = PyObject_CallObject((PyObject*)&LDA_type, args);
-			try
-			{
-				vector<uint8_t> extra_data;
-				((TopicModelObject*)p)->inst->loadModel(str, &extra_data);
-				if (!extra_data.empty())
-				{
-					py::UniqueObj pickle{ PyImport_ImportModule("pickle") };
-					PyObject* pickle_dict{ PyModule_GetDict(pickle) };
-					py::UniqueObj bytes{ PyBytes_FromStringAndSize((const char*)extra_data.data(), extra_data.size()) };
-					py::UniqueObj args{ Py_BuildValue("(O)", bytes.get()) };
-					Py_XDECREF(((TopicModelObject*)p)->initParams);
-					((TopicModelObject*)p)->initParams = PyObject_CallObject(
-						PyDict_GetItemString(pickle_dict, "loads"),
-						args
-					);
-				}
-			}
-			catch (const tomoto::serializer::UnfitException&)
-			{
-				Py_XDECREF(p);
-				continue;
-			}
-			((TopicModelObject*)p)->isPrepared = true;
-			return p;
-		}
-		throw runtime_error{ std::string("'") + filename + std::string("' is not valid model file") };
-	}
-	catch (const bad_exception&)
-	{
-	}
-	catch (const ios_base::failure& e)
-	{
-		PyErr_SetString(PyExc_OSError, e.what());
-	}
-	catch (const exception& e)
-	{
-		PyErr_SetString(PyExc_Exception, e.what());
-	}
-	return nullptr;
+		if (!self->inst) throw py::RuntimeError{ "inst is null" };
+		if (self->isPrepared) throw py::RuntimeError{ "cannot set_word_prior() after train()" };
+		auto* inst = static_cast<tomoto::ILDAModel*>(self->inst);
+		
+		std::vector<tomoto::Tid> tids = py::toCpp<std::vector<tomoto::Tid>>(
+			topicIds, 
+			"`topic_ids` must be a list of integers"
+		);
+		
+		inst->setSparseWordPrior(word, tids);
+		Py_INCREF(Py_None);
+		return Py_None;
+	});
 }
 
-PyObject* LDA_loads(PyObject*, PyObject* args, PyObject *kwargs)
+PyObject* LDA_getSparseWordPrior(TopicModelObject* self, PyObject* args, PyObject *kwargs)
 {
-	Py_buffer data;
-	static const char* kwlist[] = { "data", nullptr };
-	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "y*", (char**)kwlist, &data)) return nullptr;
-	try
+	const char* word;
+	static const char* kwlist[] = { "word", nullptr };
+	if (!PyArg_ParseTupleAndKeywords(args, kwargs, "s", (char**)kwlist, &word)) return nullptr;
+	return py::handleExc([&]()
 	{
-		tomoto::serializer::imstream str{ (char*)data.buf, data.len };
-		for (size_t i = 0; i < (size_t)tomoto::TermWeight::size; ++i)
-		{
-			str.seekg(0);
-			py::UniqueObj args{ Py_BuildValue("(n)", i) };
-			auto* p = PyObject_CallObject((PyObject*)&LDA_type, args);
-			try
-			{
-				vector<uint8_t> extra_data;
-				((TopicModelObject*)p)->inst->loadModel(str, &extra_data);
-				if (!extra_data.empty())
-				{
-					py::UniqueObj pickle{ PyImport_ImportModule("pickle") };
-					PyObject* pickle_dict{ PyModule_GetDict(pickle) };
-					py::UniqueObj bytes{ PyBytes_FromStringAndSize((const char*)extra_data.data(), extra_data.size()) };
-					py::UniqueObj args{ Py_BuildValue("(O)", bytes.get()) };
-					Py_XDECREF(((TopicModelObject*)p)->initParams);
-					((TopicModelObject*)p)->initParams = PyObject_CallObject(
-						PyDict_GetItemString(pickle_dict, "loads"),
-						args
-					);
-				}
-			}
-			catch (const tomoto::serializer::UnfitException&)
-			{
-				Py_XDECREF(p);
-				continue;
-			}
-			((TopicModelObject*)p)->isPrepared = true;
-			return p;
-		}
-		throw runtime_error{ "`data` is not valid model file" };
-	}
-	catch (const bad_exception&)
-	{
-	}
-	catch (const ios_base::failure& e)
-	{
-		PyErr_SetString(PyExc_OSError, e.what());
-	}
-	catch (const exception& e)
-	{
-		PyErr_SetString(PyExc_Exception, e.what());
-	}
-	return nullptr;
+		if (!self->inst) throw py::RuntimeError{ "inst is null" };
+		auto* inst = static_cast<tomoto::ILDAModel*>(self->inst);
+		return py::buildPyValue(inst->getSparseWordPrior(word));
+	});
 }
-*/
 
 PyObject* Document_LDA_Z(DocumentObject* self, void* closure)
 {
@@ -823,6 +748,10 @@ static PyMethodDef LDA_methods[] =
 	{ "summary", (PyCFunction)LDA_summary, METH_VARARGS | METH_KEYWORDS, LDA_summary__doc__},
 	{ "get_word_forms", (PyCFunction)LDA_getWordForms, METH_VARARGS | METH_KEYWORDS, LDA_get_word_forms__doc__},
 	{ "get_hash", (PyCFunction)LDA_getHash, METH_VARARGS | METH_KEYWORDS, LDA_get_hash__doc__},
+	{ "set_sparse_word_prior", (PyCFunction)LDA_setSparseWordPrior, METH_VARARGS | METH_KEYWORDS,
+	  "Set sparse word prior by specifying topic IDs that should have prior=1" },
+	{ "get_sparse_word_prior", (PyCFunction)LDA_getSparseWordPrior, METH_VARARGS | METH_KEYWORDS,
+	  "Get sparse word prior as list of topic IDs" },
 	{ nullptr }
 };
 

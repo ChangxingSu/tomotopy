@@ -194,5 +194,8 @@ namespace tomoto
 
 		virtual std::vector<Float> getWordPrior(const std::string& word) const = 0;
 		virtual void setWordPrior(const std::string& word, const std::vector<Float>& priors) = 0;
+
+		virtual void setSparseWordPrior(const std::string& word, const std::vector<Tid>& topicIds) = 0;
+		virtual std::vector<Tid> getSparseWordPrior(const std::string& word) const = 0;
 	};
 }
